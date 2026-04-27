@@ -1,0 +1,35 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Tooling / local
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Generated PDFs (keep directory via .gitkeep)
+output/*
+!output/.gitkeep
