@@ -14,6 +14,8 @@ from pathlib import Path
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from fraction_practice import (
     MAX_RANGE_DEFAULT,
@@ -23,17 +25,62 @@ from fraction_practice import (
 )
 
 
+def _get_forwarded_trusted_proxies() -> list[str] | str:
+    """
+    Hosts that may set X-Forwarded-Proto (and friends). Uvicorn defaults to 127.0.0.1 only,
+    so a Docker or LAN reverse proxy is often *not* trusted and scheme stays http. Default *
+    (override with FORWARDED_TRUSTED_PROXIES, e.g. 10.0.0.0/8) so url_for and base_url use https
+    when the front proxy sets X-Forwarded-Proto: https.
+    """
+    raw = os.environ.get("FORWARDED_TRUSTED_PROXIES", "*").strip()
+    if not raw:
+        return "*"
+    if raw == "*":
+        return "*"
+    return [h.strip() for h in raw.split(",") if h.strip()]
+
+
 def _get_root_path() -> str:
     p = os.environ.get("ROOT_PATH", "").strip()
     if not p or p == "/":
         return ""
-    return p.rstrip("/")
+    p = p.rstrip("/")
+    if not p.startswith("/"):
+        p = f"/{p}"
+    return p
+
+
+class _RootPathStripMiddleware(BaseHTTPMiddleware):
+    """
+    When the proxy forwards a path prefix (e.g. /fractions) to this app, routing uses / and
+    /generate. Strip ROOT_PATH from the path so /fractions and /fractions/ both work without
+    a 307 from Starlette redirect_slashes handling.
+    """
+
+    def __init__(self, app, root_getter) -> None:
+        super().__init__(app)
+        self._root_getter = root_getter
+
+    async def dispatch(self, request: Request, call_next):
+        pfx = (self._root_getter() or "").rstrip("/")
+        if pfx:
+            p = request.scope.get("path", "")
+            if p == pfx or p.startswith(pfx + "/"):
+                suffix = p[len(pfx) :] or "/"
+                if not suffix.startswith("/"):
+                    suffix = f"/{suffix}"
+                request.scope["path"] = suffix
+        return await call_next(request)
 
 
 app = FastAPI(
     title="Fraction practice PDF",
     root_path=_get_root_path(),
+    redirect_slashes=False,
 )
+app.add_middleware(_RootPathStripMiddleware, _get_root_path)
+# After RootPath so stack is: ... -> proxy headers -> root strip -> routes (see Starlette add_middleware order)
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=_get_forwarded_trusted_proxies())
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
