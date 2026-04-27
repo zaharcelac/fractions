@@ -13,6 +13,7 @@ from datetime import datetime
 from fractions import Fraction
 from math import cos, sin, pi
 from pathlib import Path
+from typing import Any, BinaryIO
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
@@ -20,7 +21,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
 
 
-# Supported denominators per spec: 1/2 through 1/8
+# Max denominator for --range: at least 3, up to 8 (see MIN/MAX below).
+MIN_RANGE_DEFAULT = 3
 MAX_RANGE_DEFAULT = 8
 
 # Single header on every page (overridable with --header); centered, bold, large.
@@ -258,10 +260,10 @@ def _parse_args() -> argparse.Namespace:
         default=4,
         dest="frange",
         metavar="N",
-        choices=range(2, MAX_RANGE_DEFAULT + 1),
+        choices=range(MIN_RANGE_DEFAULT, MAX_RANGE_DEFAULT + 1),
         help=(
             f"Maximum denominator: proper fractions use denominators from 2 through N "
-            f"(default: 4, allowed: 2–{MAX_RANGE_DEFAULT})."
+            f"(default: 4, allowed: {MIN_RANGE_DEFAULT}–{MAX_RANGE_DEFAULT})."
         ),
     )
     p.add_argument(
@@ -304,77 +306,62 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> int:
-    args = _parse_args()
-    rng = random.Random(args.seed)
+def write_fractions_pdf(
+    out_file: BinaryIO,
+    *,
+    pages: int,
+    frange: int,
+    max_problems: int,
+    header: str = PAGE_HEADER_TEXT,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """
+    Write a US Letter PDF to ``out_file`` (path-like opened by caller, or e.g. :class:`io.BytesIO`).
+    Raises :exc:`ValueError` if options are invalid for generation.
+    """
+    if pages < 1:
+        raise ValueError("--pages must be at least 1")
+    if max_problems < 1:
+        raise ValueError("--max-problems must be at least 1")
+    if frange < MIN_RANGE_DEFAULT or frange > MAX_RANGE_DEFAULT:
+        raise ValueError(
+            f"--range must be between {MIN_RANGE_DEFAULT} and {MAX_RANGE_DEFAULT}"
+        )
 
-    rmax = args.frange
-
-    if args.pages < 1:
-        print("Error: --pages must be at least 1.", file=sys.stderr)
-        return 1
-    if args.max_problems < 1:
-        print("Error: --max-problems must be at least 1.", file=sys.stderr)
-        return 1
-
-    pool = _proper_fractions(rmax)
+    pool = _proper_fractions(frange)
     pool_set = set(pool)
     n_forms = len(pool)
     n_distinct_values = len({p.value for p in pool})
     if n_distinct_values < 3:
-        print(
-            "Error: need at least 3 distinct rational values in the pool for A/B/C (increase --range).",
-            file=sys.stderr,
-        )
-        return 1
-
-    per_page = min(args.max_problems, n_forms)
-    if per_page < args.max_problems:
-        print(
-            f"Note: using {per_page} problem(s) per worksheet (max (n/d) forms in pool: {n_forms}).",
-            file=sys.stderr,
-        )
-    if per_page > MAX_PIES_PER_PDF_PAGE:
-        n_phys = (per_page + MAX_PIES_PER_PDF_PAGE - 1) // MAX_PIES_PER_PDF_PAGE
-        print(
-            f"Note: {per_page} problem(s) per worksheet are split across {n_phys} PDF page(s) "
-            f"(2×{MAX_PIES_PER_COLUMN} layout, {MAX_PIES_PER_PDF_PAGE} per page).",
-            file=sys.stderr,
+        raise ValueError(
+            "Need at least 3 distinct rational values in the pool for A/B/C (increase --range)."
         )
 
-    if args.output is not None:
-        output_path = Path(args.output).expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-    else:
-        out_dir = Path("output")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        if args.test:
-            output_path: Path = out_dir / "test.pdf"
-        else:
-            out_name = datetime.now().strftime("fractions_%Y-%m-%d_%H-%M-%S.pdf")
-            output_path = out_dir / out_name
+    per_page = min(max_problems, n_forms)
+    rng = random.Random(seed)
+
+    sub_pages_per_worksheet = (per_page + MAX_PIES_PER_PDF_PAGE - 1) // MAX_PIES_PER_PDF_PAGE
+    total_pdf_pages = pages * sub_pages_per_worksheet
 
     margin = _LETTER_MARGIN
     title_y = _LETTER_TITLE_Y
     content_top = _LETTER_CONTENT_TOP
     row_h = PIE_ROW_HEIGHT
-    sub_pages_per_worksheet = (per_page + MAX_PIES_PER_PDF_PAGE - 1) // MAX_PIES_PER_PDF_PAGE
-    total_pdf_pages = args.pages * sub_pages_per_worksheet
     col_left = margin
     col_right = margin + _COLUMN_WIDTH + _COLUMN_GUTTER
 
-    c = canvas.Canvas(str(output_path), pagesize=letter)
-    c.setTitle(args.header)
+    c = canvas.Canvas(out_file, pagesize=letter)
+    c.setTitle(header)
 
-    for pnum in range(args.pages):
+    for pnum in range(pages):
         picked: list[Problem] = rng.sample(pool, per_page)
         for start in range(0, per_page, MAX_PIES_PER_PDF_PAGE):
             chunk = picked[start : start + MAX_PIES_PER_PDF_PAGE]
 
             c.setFont(PAGE_HEADER_FONT, PAGE_HEADER_FONT_SIZE)
             c.setFillColorRGB(0, 0, 0)
-            w_header = c.stringWidth(args.header, PAGE_HEADER_FONT, PAGE_HEADER_FONT_SIZE)
-            c.drawString((_LETTER_PAGE_W - w_header) / 2, title_y, args.header)
+            w_header = c.stringWidth(header, PAGE_HEADER_FONT, PAGE_HEADER_FONT_SIZE)
+            c.drawString((_LETTER_PAGE_W - w_header) / 2, title_y, header)
 
             for idx, pr in enumerate(chunk):
                 row = idx // PIE_NUM_COLUMNS
@@ -398,11 +385,64 @@ def main() -> int:
             c.showPage()
 
     c.save()
+    return {
+        "per_page": per_page,
+        "total_pdf_pages": total_pdf_pages,
+        "n_forms": n_forms,
+        "worksheets": pages,
+        "max_requested": max_problems,
+    }
+
+
+def main() -> int:
+    args = _parse_args()
+
+    rmax = args.frange
+
+    if args.output is not None:
+        output_path = Path(args.output).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = Path("output")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if args.test:
+            output_path: Path = out_dir / "test.pdf"
+        else:
+            out_name = datetime.now().strftime("fractions_%Y-%m-%d_%H-%M-%S.pdf")
+            output_path = out_dir / out_name
+
+    try:
+        with open(output_path, "wb") as f:
+            meta = write_fractions_pdf(
+                f,
+                pages=args.pages,
+                frange=rmax,
+                max_problems=args.max_problems,
+                header=args.header,
+                seed=args.seed,
+            )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     print(
-        f"Wrote {output_path} ({total_pdf_pages} PDF page(s), {per_page} problem(s) per worksheet, {args.pages} worksheet(s), "
+        f"Wrote {output_path} ({meta['total_pdf_pages']} PDF page(s), {meta['per_page']} problem(s) per "
+        f"worksheet, {meta['worksheets']} worksheet(s), "
         f"2×{MAX_PIES_PER_COLUMN} layout, pie radius {DEFAULT_CIRCLE_RADIUS_PT:.1f} pt).",
         file=sys.stderr,
     )
+    if meta["per_page"] < meta["max_requested"]:
+        print(
+            f"Note: using {meta['per_page']} problem(s) per worksheet (max (n/d) forms in pool: {meta['n_forms']}).",
+            file=sys.stderr,
+        )
+    if meta["per_page"] > MAX_PIES_PER_PDF_PAGE:
+        n_phys = (meta["per_page"] + MAX_PIES_PER_PDF_PAGE - 1) // MAX_PIES_PER_PDF_PAGE
+        print(
+            f"Note: {meta['per_page']} problem(s) per worksheet are split across {n_phys} PDF page(s) "
+            f"(2×{MAX_PIES_PER_COLUMN} layout, {MAX_PIES_PER_PDF_PAGE} per page).",
+            file=sys.stderr,
+        )
     return 0
 
 

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fraction practice</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin-top: 0.75rem; font-weight: 600; }
+    input, select { box-sizing: border-box; margin-top: 0.25rem; width: auto; max-width: 100%; }
+    button { margin-top: 1.25rem; padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; }
+    .err { color: #b00; margin-bottom: 1rem; }
+    .meta { color: #444; font-size: 0.9rem; margin-top: 0.2rem; }
+  </style>
+</head>
+<body>
+  <h1>Fraction practice PDF</h1>
+  {% if error %}
+  <p class="err">{{ error }}</p>
+  {% endif %}
+  <form method="post" action="{{ form_action }}" enctype="application/x-www-form-urlencoded">
+    <label>Pages (worksheets)
+      <input name="pages" type="number" min="1" max="99" value="{{ pages }}" required />
+    </label>
+    <label>Range (max denominator)
+      <select name="frange" required>
+        {% for d in range(min_range, max_range + 1) %}
+        <option value="{{ d }}"{% if d == frange %} selected{% endif %}>{{ d }} (denominators 2 to {{ d }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Max problems per worksheet
+      <select name="max_problems" required>
+        {% for n in range(1, 11) %}
+        <option value="{{ n }}"{% if n == max_problems %} selected{% endif %}>{{ n }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Random seed
+      <input
+        name="seed"
+        type="number"
+        min="0"
+        max="999"
+        value="{{ seed }}"
+        inputmode="numeric"
+        title="0&ndash;999; clear for fully random"
+      />
+    </label>
+    <p class="meta">Clear seed for a new random layout each time.</p>
+    <button type="submit">Download PDF</button>
+  </form>
+</body>
+</html>

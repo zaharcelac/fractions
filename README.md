@@ -5,7 +5,7 @@ Generates **US Letter** PDF worksheets with ReportLab. Each item has a **pie cha
 ## Requirements
 
 - Python 3.10+ (3.12+ or 3.14+ recommended; see [`.python-version`](.python-version) if you use pyenv)
-- See [`requirements.txt`](requirements.txt) (ReportLab and dependencies)
+- See [`requirements.txt`](requirements.txt) (ReportLab, FastAPI, Uvicorn, and dependencies)
 
 ## Setup
 
@@ -27,7 +27,7 @@ python3 fraction_practice.py [--pages N] [--range N] [--max-problems N] [-o PATH
 | Argument | Default | Meaning |
 |----------|---------|--------|
 | `--pages` | `1` | How many **worksheet** passes to generate; each can span multiple physical PDF pages if needed. |
-| `--range` | `4` | Largest **denominator** `R`; problems use all proper pairs `(n, d)` with `1 ≤ n < d` and `2 ≤ d ≤ R`. **Allowed:** `2`–`8` (enforced at parse time). |
+| `--range` | `4` | Largest **denominator** `R`; problems use all proper pairs `(n, d)` with `1 ≤ n < d` and `2 ≤ d ≤ R`. **Allowed:** `3`–`8` (enforced at parse time). |
 | `--max-problems` | `10` | How many problems per **worksheet**; capped by the number of **(n, d) forms** in the pool. |
 | `-o` / `--output` | (see below) | Output PDF path. |
 | `--header` | `FRACTIONS 101` | Single line of plain text, centered, bold, at the top of each page. |
@@ -62,6 +62,28 @@ python3 fraction_practice.py --pages 1 --range 4 --max-problems 10
 python3 fraction_practice.py --range 8 --max-problems 12
 ```
 
+## Web service (optional)
+
+Run [`app.py`](app.py) with Uvicorn to get a small HTML form (same options as the CLI) and download the generated PDF in the browser.
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port 8000
+# Open http://127.0.0.1:8000/ — submit to download a PDF
+```
+
+**Behind a reverse proxy** (e.g. public URL is `https://example.com/fractions/…`), set **`ROOT_PATH`** to the path prefix the proxy strips before forwarding (no trailing slash), for example:
+
+```bash
+export ROOT_PATH=/fractions
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+This sets FastAPI’s `root_path` so link helpers (e.g. the form’s post URL) use the right prefix. Your proxy should still be configured to forward to the app and set `X-Forwarded-Proto` / `Host` as usual.
+
+| Path | Description |
+|------|-------------|
+| `app.py` | FastAPI app: `GET /` form, `POST /generate` returns `application/pdf` |
+
 ## Tuning the PDF (code constants)
 
 Most visual settings live at the top of [`fraction_practice.py`](fraction_practice.py), including:
@@ -74,9 +96,10 @@ Most visual settings live at the top of [`fraction_practice.py`](fraction_practi
 
 | Path | Description |
 |------|-------------|
-| `fraction_practice.py` | CLI and PDF layout |
+| `fraction_practice.py` | CLI, PDF engine (`write_fractions_pdf` for reuse) |
+| `app.py` | Optional FastAPI form + download |
 | `requirements.txt` | Python dependencies |
-| `output/` | Default location for generated PDFs |
+| `output/` | Default location for CLI PDFs |
 
 ## License
 
