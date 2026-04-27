@@ -5,7 +5,7 @@ Generates **US Letter** PDF worksheets with ReportLab. Each item has a **pie cha
 ## Requirements
 
 - Python 3.10+ (3.12+ or 3.14+ recommended; see [`.python-version`](.python-version) if you use pyenv)
-- See [`requirements.txt`](requirements.txt) (ReportLab, FastAPI, Uvicorn, Jinja2, `python-multipart`, **slowapi** for rate limits, and dependencies)
+- See [`requirements.txt`](requirements.txt) (ReportLab, **qrcode** / **Pillow** for footers, FastAPI, Uvicorn, Jinja2, `python-multipart`, **slowapi** for rate limits, and dependencies)
 
 ## Setup
 
@@ -39,13 +39,13 @@ python3 fraction_practice.py [--pages N] [--range N] [--max-problems N] [-o PATH
 
 Every **physical** page includes a **single** centered line in **regular Courier**, with fields separated by **` | `**:
 
-`SET W of Z | PAGE X of Y | DENOMINATOR: R | MAX-PROBLEMS: N | URL: host…`
+`SET W of Z | PAGE X of Y | DENOMINATOR: R | MAX-PROBLEMS: N | URL: host…` (scheme omitted in text) — and a **QR code** to the right encoding a **full** `http://` or `https://` URL (same as **``--public-url`` / ``FRACTIONS_PUBLIC_URL``** with scheme preserved, or `https://` added if the value had no scheme). The row is **centered**; the QR is **vertically center-aligned** with the text. If the line is too wide, the QR shrinks or is omitted; if the URL is unset, no QR is drawn.
 
 - **SET** — worksheet index **W** of **Z** total worksheets (`--pages`).
 - **PAGE** — physical PDF page **X** of **Y** (extra pages when a worksheet has more than 10 problems, or multiple worksheets).
 - **DENOMINATOR** — `--range` value `R` (largest denominator in the pool).
 - **MAX-PROBLEMS** — actual problems per worksheet after capping to the pool size (may be below what you requested).
-- **URL** — `http://` / `https://` stripped; trailing `/` removed. Use **`--public-url`** or **`FRACTIONS_PUBLIC_URL`** so generated PDFs point at your real web UI.
+- **URL** — shown without scheme; trailing `/` removed. The **QR** encodes a full `http://` or `https://` URL. Use **`--public-url`** or **`FRACTIONS_PUBLIC_URL`** so the footer and QR point at your real web UI.
 
 ### Layout and content rules
 
@@ -131,7 +131,7 @@ The image runs **Uvicorn** on port **8000** (see [`Dockerfile`](Dockerfile)).
 Most visual settings live at the top of [`fraction_practice.py`](fraction_practice.py), including:
 
 - **Header:** `PAGE_HEADER_TEXT`, `PAGE_HEADER_FONT`, `PAGE_HEADER_FONT_SIZE`
-- **Footer:** `FOOTER_FONT`, `FOOTER_FONT_SIZE` (plus bottom margin / reserved space near `_FOOTER_RESERVE`)
+- **Footer:** `FOOTER_FONT`, `FOOTER_FONT_SIZE`, `FOOTER_QR_SIZE_PT`, `FOOTER_QR_GAP_PT` (plus bottom margin / reserved space near `_FOOTER_RESERVE`; QR uses **qrcode** + **Pillow** with a standard **quiet zone** and sharp bitmap scaling for reliable scanning)
 - **Pies:** `PIE_SHADED_FILL_RGB`, `PIE_DIVIDERS_STROKE_PT`, `PIE_OUTLINE_CIRCLE_STROKE_PT`, `PIE_RIM_TO_ANSWERS_GAP_PT`
 - **Answer bubbles and labels:** `ANSWERS_*` (font, spacing, bubble size, stroke, gap to fraction text, etc.)
 

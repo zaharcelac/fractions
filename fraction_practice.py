@@ -13,11 +13,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
 from math import cos, sin, pi
+from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO
 
+import qrcode
+from PIL import Image
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
 
@@ -31,9 +35,15 @@ PAGE_HEADER_TEXT: str = "FRACTIONS 101"
 PAGE_HEADER_FONT: str = "Helvetica-Bold"
 PAGE_HEADER_FONT_SIZE: float = 20.0
 
-# Footer: regular monospace, multi-line, centered; drawn on every physical page.
+# Footer: regular monospace, centered; one text row; QR (same data as public URL) after the URL.
 FOOTER_FONT: str = "Courier"
 FOOTER_FONT_SIZE: float = 9.0
+FOOTER_QR_GAP_PT: float = 4.0
+# QR module size in pt (if text + QR is too wide, this is reduced in _draw_page_footer)
+# On-page size (pt); use >= ~28 for easier phone scanning. Bitmap is built at higher
+# pixel count so the PDF is sharp; quiet zone and NEAREST resampling are required
+# for reliable decoding (see _footer_qr_image_bytes).
+FOOTER_QR_SIZE_PT: float = 32.0
 
 # Multiple-choice rows to the right of each pie: empty circles + fraction (students mark a circle)
 ANSWERS_FONT: str = "Helvetica-Bold"
@@ -51,8 +61,8 @@ _LETTER_PAGE_W, _LETTER_PAGE_H = letter
 _LETTER_MARGIN = 0.6 * inch
 _LETTER_BELOW_TITLE = 0.4 * inch
 _LETTER_CONTENT_BOTTOM_PAD = 0.3 * inch
-# Reserve space for one centered mono footer line below the main pie area.
-_FOOTER_RESERVE = 0.22 * inch
+# Reserve space for footer text + QR (height ~ FOOTER_QR_SIZE_PT) below the main pie area.
+_FOOTER_RESERVE = 0.52 * inch
 _LETTER_TITLE_Y = _LETTER_PAGE_H - _LETTER_MARGIN
 _LETTER_CONTENT_TOP = _LETTER_TITLE_Y - _LETTER_BELOW_TITLE
 _LETTER_CONTENT_BOTTOM = _LETTER_MARGIN + _LETTER_CONTENT_BOTTOM_PAD + _FOOTER_RESERVE
@@ -267,6 +277,53 @@ def normalize_public_url_for_footer(raw: str | None) -> str:
     return s.rstrip("/") or "-"
 
 
+def normalize_public_url_for_qr(raw: str | None) -> str:
+    """
+    Return a full URL (with http:// or https://) for QR payload.
+    If ``raw`` already has a scheme, that scheme is preserved; otherwise ``https://`` is used.
+    """
+    if raw is None:
+        return ""
+    s = raw.strip()
+    if not s:
+        return ""
+    low = s.lower()
+    if low.startswith("https://") or low.startswith("http://"):
+        return s.rstrip("/")
+    s = s.lstrip("/")
+    return f"https://{s}".rstrip("/")
+
+
+def _footer_qr_image_bytes(data: str, size_pt: int) -> bytes:
+    """
+    Build a PNG (bytes) for the footer QR, optimized for print/PDF and camera scan.
+
+    ISO 18004 requires a *quiet zone* (white border) around the symbol; ``border=0`` breaks
+    most scanners. We use a standard 4-module border, high error correction, and a
+    high-resolution bitmap scaled with *nearest* neighbor so edges stay clean (LANCZOS
+    was blurring to gray and often made codes unreadable).
+    """
+    q = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=4,
+        border=4,  # quiet zone in box units; do not set to 0
+    )
+    q.add_data(data)
+    q.make(fit=True)
+    im = q.make_image(fill_color="black", back_color="white")
+    if im.mode not in ("RGB", "RGBA"):
+        im = im.convert("RGB")
+    # Embed a dense bitmap, draw small in the PDF, so downscaling is sharp. NEAREST
+    # preserves B/W modules; avoid antialiased resizes on QR.
+    px = max(256, int(size_pt) * 10)
+    resample = Image.Resampling.NEAREST if hasattr(Image, "Resampling") else Image.NEAREST
+    im = im.resize((px, px), resample)
+    out = BytesIO()
+    im.save(out, format="PNG", compress_level=3)
+    return out.getvalue()
+
+
 def _draw_page_footer(
     c: canvas.Canvas,
     *,
@@ -277,8 +334,14 @@ def _draw_page_footer(
     denominator: int,
     max_problems_actual: int,
     public_url_display: str,
+    public_url_qr: str,
 ) -> None:
-    """Draw centered one-line footer (regular Courier), fields separated by |."""
+    """
+    Centered one-line footer (regular Courier) with ' | ' separators, plus a QR
+    to the right of the URL. The printed line shows the host/path only; the QR
+    encodes a full http(s) URL (``public_url_qr``). The QR and text are
+    vertically center-aligned in the row.
+    """
     line = " | ".join(
         [
             f"SET {set_w} of {set_z}",
@@ -290,9 +353,54 @@ def _draw_page_footer(
     )
     c.setFont(FOOTER_FONT, FOOTER_FONT_SIZE)
     c.setFillColorRGB(0, 0, 0)
-    y = _LETTER_MARGIN + FOOTER_FONT_SIZE * 0.2
-    w = c.stringWidth(line, FOOTER_FONT, FOOTER_FONT_SIZE)
-    c.drawString((_LETTER_PAGE_W - w) / 2, y, line)
+    a_s, d_s = pdfmetrics.getAscentDescent(FOOTER_FONT, FOOTER_FONT_SIZE)
+    y_qr_bottom = _LETTER_MARGIN
+    qr_data = (public_url_qr or "").strip()
+    has_qr = bool(qr_data)
+    max_inner = _LETTER_PAGE_W - 2.0 * _LETTER_MARGIN
+    gap = FOOTER_QR_GAP_PT
+    qr_size = int(FOOTER_QR_SIZE_PT) if has_qr else 0
+    if has_qr:
+        w_text = c.stringWidth(line, FOOTER_FONT, FOOTER_FONT_SIZE)
+        while (
+            qr_size > 20
+            and w_text + gap + qr_size > max_inner
+        ):
+            qr_size -= 2
+        w_total = c.stringWidth(line, FOOTER_FONT, FOOTER_FONT_SIZE) + gap + float(qr_size)
+        if w_total > max_inner:
+            has_qr = False
+    if not has_qr:
+        w = c.stringWidth(line, FOOTER_FONT, FOOTER_FONT_SIZE)
+        y = _LETTER_MARGIN + FOOTER_FONT_SIZE * 0.2
+        c.drawString((_LETTER_PAGE_W - w) / 2, y, line)
+        return
+
+    w_text = c.stringWidth(line, FOOTER_FONT, FOOTER_FONT_SIZE)
+    w_total = w_text + gap + float(qr_size)
+    x0 = (_LETTER_PAGE_W - w_total) / 2.0
+    text_mid_y = y_qr_bottom + float(qr_size) / 2.0
+    y_baseline = text_mid_y - (a_s + d_s) / 2.0
+    c.drawString(x0, y_baseline, line)
+    png = _footer_qr_image_bytes(qr_data, qr_size)
+    r = ImageReader(BytesIO(png))
+    c.setFillColorRGB(1, 1, 1)
+    c.rect(
+        x0 + w_text + gap,
+        y_qr_bottom,
+        float(qr_size),
+        float(qr_size),
+        fill=1,
+        stroke=0,
+    )
+    c.drawImage(
+        r,
+        x0 + w_text + gap,
+        y_qr_bottom,
+        width=float(qr_size),
+        height=float(qr_size),
+        mask="auto",
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -381,8 +489,9 @@ def write_fractions_pdf(
     Write a US Letter PDF to ``out_file`` (path-like opened by caller, or e.g. :class:`io.BytesIO`).
     Raises :exc:`ValueError` if options are invalid for generation.
 
-    ``public_ui_url`` is displayed in the footer with http(s) stripped; if unset/empty,
-    the footer still includes a URL line with a placeholder.
+    ``public_ui_url`` is shown in the footer line with http(s) stripped; the QR encodes
+    a full http(s) URL (preserved scheme if present, else ``https://``). If unset/empty,
+    the footer line shows a URL placeholder and no QR.
     """
     if pages < 1:
         raise ValueError("--pages must be at least 1")
@@ -418,6 +527,7 @@ def write_fractions_pdf(
     c = canvas.Canvas(out_file, pagesize=letter)
     c.setTitle(header)
     public_display = normalize_public_url_for_footer(public_ui_url)
+    public_qr = normalize_public_url_for_qr(public_ui_url)
 
     pdf_page_num = 0
     for pnum in range(pages):
@@ -459,6 +569,7 @@ def write_fractions_pdf(
                 denominator=frange,
                 max_problems_actual=per_page,
                 public_url_display=public_display,
+                public_url_qr=public_qr,
             )
             c.showPage()
 

@@ -54,7 +54,7 @@ def _env_limit_str(name: str, default: str) -> str:
 # Per-IP limits (slowapi / limits). Tune via env for public traffic.
 # Examples: "60/minute", "10/hour", "100/day"
 RATE_LIMIT_INDEX = _env_limit_str("RATE_LIMIT_INDEX", "60/minute")
-RATE_LIMIT_GENERATE = _env_limit_str("RATE_LIMIT_GENERATE", "8/minute")
+RATE_LIMIT_GENERATE = _env_limit_str("RATE_LIMIT_GENERATE", "30/minute")
 
 # Cap total worksheet "pages" from the web form (CLI has no such cap)
 try:
