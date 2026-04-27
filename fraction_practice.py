@@ -5,6 +5,7 @@ Generate US Letter PDF worksheets: circle (pie) model + three fraction choices.
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import sys
 from collections import defaultdict
@@ -30,6 +31,10 @@ PAGE_HEADER_TEXT: str = "FRACTIONS 101"
 PAGE_HEADER_FONT: str = "Helvetica-Bold"
 PAGE_HEADER_FONT_SIZE: float = 20.0
 
+# Footer: regular monospace, multi-line, centered; drawn on every physical page.
+FOOTER_FONT: str = "Courier"
+FOOTER_FONT_SIZE: float = 9.0
+
 # Multiple-choice rows to the right of each pie: empty circles + fraction (students mark a circle)
 ANSWERS_FONT: str = "Helvetica-Bold"
 ANSWERS_FONT_SIZE: float = 18.0
@@ -46,9 +51,11 @@ _LETTER_PAGE_W, _LETTER_PAGE_H = letter
 _LETTER_MARGIN = 0.6 * inch
 _LETTER_BELOW_TITLE = 0.4 * inch
 _LETTER_CONTENT_BOTTOM_PAD = 0.3 * inch
+# Reserve space for one centered mono footer line below the main pie area.
+_FOOTER_RESERVE = 0.22 * inch
 _LETTER_TITLE_Y = _LETTER_PAGE_H - _LETTER_MARGIN
 _LETTER_CONTENT_TOP = _LETTER_TITLE_Y - _LETTER_BELOW_TITLE
-_LETTER_CONTENT_BOTTOM = _LETTER_MARGIN + _LETTER_CONTENT_BOTTOM_PAD
+_LETTER_CONTENT_BOTTOM = _LETTER_MARGIN + _LETTER_CONTENT_BOTTOM_PAD + _FOOTER_RESERVE
 _LETTER_CONTENT_USABLE = _LETTER_CONTENT_TOP - _LETTER_CONTENT_BOTTOM
 # One vertical slot = 1/5 of the content height (max 5 circles stacked per column).
 PIE_ROW_HEIGHT: float = _LETTER_CONTENT_USABLE / 5.0
@@ -243,6 +250,51 @@ def _draw_problem_block(
         ty -= line_h
 
 
+def normalize_public_url_for_footer(raw: str | None) -> str:
+    """
+    Return host[/path] with no http:// or https:// (trailing slash stripped).
+    Empty or whitespace-only input yields a short placeholder (PDF built-in font safe).
+    """
+    if raw is None:
+        return "-"
+    s = raw.strip()
+    if not s:
+        return "-"
+    for prefix in ("https://", "http://"):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix) :]
+            break
+    return s.rstrip("/") or "-"
+
+
+def _draw_page_footer(
+    c: canvas.Canvas,
+    *,
+    set_w: int,
+    set_z: int,
+    page_x: int,
+    page_y: int,
+    denominator: int,
+    max_problems_actual: int,
+    public_url_display: str,
+) -> None:
+    """Draw centered one-line footer (regular Courier), fields separated by |."""
+    line = " | ".join(
+        [
+            f"SET {set_w} of {set_z}",
+            f"PAGE {page_x} of {page_y}",
+            f"DENOMINATOR: {denominator}",
+            f"MAX-PROBLEMS: {max_problems_actual}",
+            f"URL: {public_url_display}",
+        ]
+    )
+    c.setFont(FOOTER_FONT, FOOTER_FONT_SIZE)
+    c.setFillColorRGB(0, 0, 0)
+    y = _LETTER_MARGIN + FOOTER_FONT_SIZE * 0.2
+    w = c.stringWidth(line, FOOTER_FONT, FOOTER_FONT_SIZE)
+    c.drawString((_LETTER_PAGE_W - w) / 2, y, line)
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Generate US Letter PDFs with simple fraction practice (circle model + 3 choices)."
@@ -303,6 +355,15 @@ def _parse_args() -> argparse.Namespace:
         metavar="TEXT",
         help=f'Plain text at the top of each page (default: {PAGE_HEADER_TEXT!r}).',
     )
+    p.add_argument(
+        "--public-url",
+        default=None,
+        metavar="URL",
+        help=(
+            "Public web UI URL for the PDF footer (scheme optional; shown without http(s)://). "
+            "If omitted, uses env FRACTIONS_PUBLIC_URL or the footer URL line shows a placeholder."
+        ),
+    )
     return p.parse_args()
 
 
@@ -314,10 +375,14 @@ def write_fractions_pdf(
     max_problems: int,
     header: str = PAGE_HEADER_TEXT,
     seed: int | None = None,
+    public_ui_url: str | None = None,
 ) -> dict[str, Any]:
     """
     Write a US Letter PDF to ``out_file`` (path-like opened by caller, or e.g. :class:`io.BytesIO`).
     Raises :exc:`ValueError` if options are invalid for generation.
+
+    ``public_ui_url`` is displayed in the footer with http(s) stripped; if unset/empty,
+    the footer still includes a URL line with a placeholder.
     """
     if pages < 1:
         raise ValueError("--pages must be at least 1")
@@ -352,7 +417,9 @@ def write_fractions_pdf(
 
     c = canvas.Canvas(out_file, pagesize=letter)
     c.setTitle(header)
+    public_display = normalize_public_url_for_footer(public_ui_url)
 
+    pdf_page_num = 0
     for pnum in range(pages):
         picked: list[Problem] = rng.sample(pool, per_page)
         for start in range(0, per_page, MAX_PIES_PER_PDF_PAGE):
@@ -382,6 +449,17 @@ def write_fractions_pdf(
                     shuffled,
                     rng,
                 )
+            pdf_page_num += 1
+            _draw_page_footer(
+                c,
+                set_w=pnum + 1,
+                set_z=pages,
+                page_x=pdf_page_num,
+                page_y=total_pdf_pages,
+                denominator=frange,
+                max_problems_actual=per_page,
+                public_url_display=public_display,
+            )
             c.showPage()
 
     c.save()
@@ -413,6 +491,9 @@ def main() -> int:
 
     try:
         with open(output_path, "wb") as f:
+            public = args.public_url
+            if public is None:
+                public = os.environ.get("FRACTIONS_PUBLIC_URL", "").strip() or None
             meta = write_fractions_pdf(
                 f,
                 pages=args.pages,
@@ -420,6 +501,7 @@ def main() -> int:
                 max_problems=args.max_problems,
                 header=args.header,
                 seed=args.seed,
+                public_ui_url=public,
             )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)

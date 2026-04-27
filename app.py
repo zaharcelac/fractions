@@ -39,6 +39,14 @@ _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
+def _public_ui_url_for_pdf(request: Request) -> str | None:
+    """Prefer FRACTIONS_PUBLIC_URL; else use the request base URL (full URL is fine; PDF strips scheme)."""
+    env = os.environ.get("FRACTIONS_PUBLIC_URL", "").strip()
+    if env:
+        return env
+    return str(request.base_url).rstrip("/")
+
+
 def _parse_seed(raw: str) -> int | None:
     s = (raw or "").strip()
     if not s:
@@ -120,6 +128,7 @@ async def generate(
             max_problems=max_problems,
             header=PAGE_HEADER_TEXT,
             seed=seed_val,
+            public_ui_url=_public_ui_url_for_pdf(request),
         )
     except ValueError as e:
         return templates.TemplateResponse(
