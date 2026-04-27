@@ -285,7 +285,7 @@ def _draw_page_footer(
             f"PAGE {page_x} of {page_y}",
             f"DENOMINATOR: {denominator}",
             f"MAX-PROBLEMS: {max_problems_actual}",
-            f"URL: {public_url_display}",
+            f"{public_url_display}",
         ]
     )
     c.setFont(FOOTER_FONT, FOOTER_FONT_SIZE)

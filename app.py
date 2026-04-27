@@ -2,6 +2,9 @@
 FastAPI web service: form to set worksheet options, download generated PDF.
 Set ROOT_PATH in production when the app is mounted behind a reverse proxy
 (e.g. served at https://host/app/  ?  ROOT_PATH=/app).
+
+PDFs are built in memory only and streamed in the HTTP response; nothing is written to
+server disk. Rate limits and MAX_WEB_PAGES reduce abuse.
 """
 from __future__ import annotations
 
@@ -14,6 +17,9 @@ from pathlib import Path
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
@@ -38,6 +44,25 @@ def _get_forwarded_trusted_proxies() -> list[str] | str:
     if raw == "*":
         return "*"
     return [h.strip() for h in raw.split(",") if h.strip()]
+
+
+def _env_limit_str(name: str, default: str) -> str:
+    v = os.environ.get(name, default).strip()
+    return v if v else default
+
+
+# Per-IP limits (slowapi / limits). Tune via env for public traffic.
+# Examples: "60/minute", "10/hour", "100/day"
+RATE_LIMIT_INDEX = _env_limit_str("RATE_LIMIT_INDEX", "60/minute")
+RATE_LIMIT_GENERATE = _env_limit_str("RATE_LIMIT_GENERATE", "8/minute")
+
+# Cap total worksheet "pages" from the web form (CLI has no such cap)
+try:
+    _MAX_WEB_PAGES = max(1, int(os.environ.get("MAX_WEB_PAGES", "20")))
+except ValueError:
+    _MAX_WEB_PAGES = 20
+
+limiter = Limiter(key_func=get_remote_address)
 
 
 def _get_root_path() -> str:
@@ -78,6 +103,8 @@ app = FastAPI(
     root_path=_get_root_path(),
     redirect_slashes=False,
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(_RootPathStripMiddleware, _get_root_path)
 # After RootPath so stack is: ... -> proxy headers -> root strip -> routes (see Starlette add_middleware order)
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=_get_forwarded_trusted_proxies())
@@ -118,6 +145,7 @@ def _index_context(
         "form_action": str(request.url_for("generate")),
         "min_range": MIN_RANGE_DEFAULT,
         "max_range": MAX_RANGE_DEFAULT,
+        "max_web_pages": _MAX_WEB_PAGES,
         "error": error,
         "pages": pages,
         "frange": frange,
@@ -127,6 +155,7 @@ def _index_context(
 
 
 @app.get("/", name="index")
+@limiter.limit(RATE_LIMIT_INDEX)
 async def form_get(request: Request):
     return templates.TemplateResponse(
         request,
@@ -143,9 +172,10 @@ async def form_get(request: Request):
 
 
 @app.post("/generate", name="generate")
+@limiter.limit(RATE_LIMIT_GENERATE)
 async def generate(
     request: Request,
-    pages: int = Form(1, ge=1),
+    pages: int = Form(1, ge=1, le=_MAX_WEB_PAGES),
     frange: int = Form(4, ge=MIN_RANGE_DEFAULT, le=MAX_RANGE_DEFAULT),
     max_problems: int = Form(10, ge=1, le=10),
     seed: str = Form(""),
@@ -191,6 +221,7 @@ async def generate(
             ),
             status_code=400,
         )
+    # Single in-memory buffer; not written to server filesystem
     data = buf.getvalue()
     fn = f"fractions_{datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S')}.pdf"
     return Response(
@@ -198,5 +229,6 @@ async def generate(
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'attachment; filename="{fn}"',
+            "Cache-Control": "no-store",
         },
     )

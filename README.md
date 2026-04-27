@@ -5,7 +5,7 @@ Generates **US Letter** PDF worksheets with ReportLab. Each item has a **pie cha
 ## Requirements
 
 - Python 3.10+ (3.12+ or 3.14+ recommended; see [`.python-version`](.python-version) if you use pyenv)
-- See [`requirements.txt`](requirements.txt) (ReportLab, FastAPI, Uvicorn, Jinja2, `python-multipart`, and dependencies)
+- See [`requirements.txt`](requirements.txt) (ReportLab, FastAPI, Uvicorn, Jinja2, `python-multipart`, **slowapi** for rate limits, and dependencies)
 
 ## Setup
 
@@ -103,7 +103,9 @@ This sets FastAPI’s `root_path` so link helpers (e.g. the form’s post URL) u
 | Path | Description |
 |------|-------------|
 | `GET /` | Form |
-| `POST /generate` | Returns `application/pdf` |
+| `POST /generate` | Returns `application/pdf` in the **response body** (in-memory; **not** saved on the server) |
+
+**Anti-abuse (public sites):** rates are per **client IP** (after `ProxyHeadersMiddleware` / `X-Forwarded-For` so the real client is used behind a trusted proxy). Defaults: **`RATE_LIMIT_INDEX`** `60/minute` on `GET /`, **`RATE_LIMIT_GENERATE`** `8/minute` on `POST /generate` (tune for CPU). Exceeded limits return **429** (JSON body from slowapi). Optional **`MAX_WEB_PAGES`** (default `20`) caps the “Pages (worksheets)” field on the web form only. Limits are **in-memory** per app process: multiple workers or machines each have their own counts; for strict global limits use a reverse proxy or a Redis-based limiter. Responses include **`Cache-Control: no-store`** for generated PDFs.
 
 ## Docker
 
@@ -119,6 +121,7 @@ Run:
 ```bash
 docker run --rm -p 8000:8000 fractions
 # Optional: -e ROOT_PATH=/fractions -e FRACTIONS_PUBLIC_URL=https://example.com/fractions
+#         -e RATE_LIMIT_GENERATE=5/minute -e FORWARDED_TRUSTED_PROXIES=10.0.0.0/8
 ```
 
 The image runs **Uvicorn** on port **8000** (see [`Dockerfile`](Dockerfile)).

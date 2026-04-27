@@ -20,7 +20,7 @@
   {% endif %}
   <form method="post" action="{{ form_action }}" enctype="application/x-www-form-urlencoded">
     <label>Pages (worksheets)
-      <input name="pages" type="number" min="1" max="99" value="{{ pages }}" required />
+      <input name="pages" type="number" min="1" max="{{ max_web_pages }}" value="{{ pages }}" required />
     </label>
     <label>Range (max denominator)
       <select name="frange" required>
